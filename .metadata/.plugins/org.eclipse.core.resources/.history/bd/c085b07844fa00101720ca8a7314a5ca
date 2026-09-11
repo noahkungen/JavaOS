@@ -1,0 +1,145 @@
+package com.javaos;
+
+import org.jline.reader.*;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.stream.Stream;
+
+public class Shell {
+    private final Kernel kernel;
+    private Path currentWorkingDirectory;
+
+    public Shell() {
+        this.kernel = Kernel.getInstance();
+        // Set initial CWD to /home/user
+        this.currentWorkingDirectory = kernel.getVfs().resolve("/home/user");
+    }
+
+    public void start() {
+        try (Terminal terminal = TerminalBuilder.builder()
+                .system(true) // Detects host OS terminal
+                .dumb(true)   // Fallback if raw mode fails
+                .build()) {
+
+            LineReader lineReader = LineReaderBuilder.builder()
+                    .terminal(terminal)
+                    .build();
+
+            String prompt = "user@javaos:" + currentWorkingDirectory.toString() + "$ ";
+
+            System.out.println("Welcome to JavaOS 1.0 (Virtual Thread Edition)");
+            System.out.println("Type 'exit' to shutdown.");
+
+            // Section 2.2: The Main Event Loop
+            while (true) {
+                String line;
+                try {
+                    line = lineReader.readLine(prompt);
+                } catch (UserInterruptException e) {
+                    // Handle Ctrl+C (SIGINT)
+                    System.out.println("^C");
+                    continue;
+                } catch (EndOfFileException e) {
+                    // Handle Ctrl+D (SIGEOF)
+                    break;
+                }
+
+                line = line.trim();
+                if (line.isEmpty()) continue;
+
+                // Execute the command in a Virtual Thread
+                executeCommand(line);
+                
+                // Update prompt in case directory changed
+                prompt = "user@javaos:" + currentWorkingDirectory.toString() + "$ ";
+            }
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void executeCommand(String line) {
+        // Basic command parsing
+        String[] parts = line.split("\\s+");
+        String cmd = parts[0];
+
+        // This runnable represents the "Process" logic
+        Runnable process = () -> {
+            try {
+                switch (cmd) {
+                    case "exit":
+                        Kernel.getInstance().shutdown();
+                        break;
+                    case "ls":
+                        runLs();
+                        break;
+                    case "pwd":
+                        System.out.println(currentWorkingDirectory.toString());
+                        break;
+                    case "touch":
+                        if(parts.length > 1) runTouch(parts[1]);
+                        else System.out.println("usage: touch <filename>");
+                        break;
+                    case "cd":
+                        if(parts.length > 1) runCd(parts[1]);
+                        break;
+                    default:
+                        System.out.println(cmd + ": command not found");
+                }
+            } catch (Exception e) {
+                System.err.println("Runtime Error: " + e.getMessage());
+            }
+        };
+
+        // Submit to scheduler and wait for completion (Foreground execution)
+        Future<?> handle = kernel.submitProcess(process);
+        try {
+            handle.get(); // Join the thread (wait for it to finish)
+        } catch (InterruptedException | ExecutionException e) {
+            System.err.println("Process interrupted.");
+        }
+    }
+
+    // --- Command Implementations using NIO ---
+
+    private void runLs() throws IOException {
+        try (Stream<Path> stream = Files.list(currentWorkingDirectory)) {
+            stream.forEach(path -> {
+                String name = path.getFileName().toString();
+                if (Files.isDirectory(path)) name += "/";
+                System.out.println(name);
+            });
+        }
+    }
+
+    private void runTouch(String filename) throws IOException {
+        Path target = currentWorkingDirectory.resolve(filename);
+        if (!Files.exists(target)) {
+            Files.createFile(target);
+        } else {
+            Files.setLastModifiedTime(target, java.nio.file.attribute.FileTime.from(java.time.Instant.now()));
+        }
+    }
+
+    private void runCd(String pathStr) {
+        Path newPath;
+        if (pathStr.startsWith("/")) {
+            newPath = kernel.getVfs().resolve(pathStr);
+        } else {
+            newPath = currentWorkingDirectory.resolve(pathStr).normalize();
+        }
+
+        if (Files.exists(newPath) && Files.isDirectory(newPath)) {
+            this.currentWorkingDirectory = newPath;
+        } else {
+            System.out.println("cd: no such directory: " + pathStr);
+        }
+    }
+}

@@ -1,0 +1,5 @@
+com\javaos\Shell.class
+com\javaos\VirtualFileSystem.class
+com\javaos\Kernel.class
+com\javaos\Bios.class
+com\javaos\Bootloader.class

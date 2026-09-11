@@ -1,0 +1,233 @@
+package com.javaos.hardware;
+
+import java.util.LinkedList;
+import java.util.Queue;
+
+/**
+ * J16 Virtual CPU v6.00 [Iron Core - Definitive Edition].
+ * Funktioner:
+ * - Separerar hårdvaruavbrott (Timer/Tangentbord) från mjukvaruavbrott (INT).
+ * - Säkert Stack-minne (använder RAM, inte Java Stacks).
+ * - Systemanrop kan inte längre blockeras felaktigt av CLI.
+ * - FIX: IRET återställer nu korrekt avbrottsflaggan istället för att alltid slå på dem!
+ */
+public class CPU {
+    private static final boolean TRACE_ENABLED = false;
+    private final Queue<String> traceLog = new LinkedList<>();
+
+    private final byte[] memory;
+    private final int[] registers = new int[8]; 
+    private int pc = 0xF0000; 
+    private int sp = 0x7FFFF; 
+    
+    private boolean zeroFlag = false;
+    private boolean signFlag = false; 
+    private boolean halt = false;
+    private boolean interruptsEnabled = false; // Startar i CLI-läge för BIOS
+    private boolean panic = false;
+    private String panicCode = "SYSTEM_HALTED";
+    
+    private int pendingInterrupt = -1; 
+    private static final int IVT_START = 0x00000; 
+
+    public CPU(byte[] memory) {
+        this.memory = memory;
+    }
+
+    public void setPC(int addr) {
+        this.pc = addr;
+    }
+
+    public void step() {
+        if (halt || panic) return;
+
+        // Utför hårdvaruavbrott endast om de är tillåtna (STI)
+        if (interruptsEnabled && pendingInterrupt != -1) {
+            executeInterrupt(pendingInterrupt);
+            pendingInterrupt = -1;
+        }
+
+        int currentPC = pc;
+        int opcode = fetch8();
+
+        if (TRACE_ENABLED) {
+            logTrace(String.format("0x%05X: %s (0x%02X)", currentPC, getOpcodeName(opcode), opcode));
+        }
+
+        switch (opcode) {
+            case 0x00: // HALT
+                halt = true; 
+                System.out.println("[ CPU ] HALT at 0x" + Integer.toHexString(currentPC).toUpperCase());
+                dumpState();
+                break;
+            case 0x01: registers[fetch8() & 0x07] = fetch24(); break;
+            case 0x02: registers[fetch8() & 0x07] = read24(fetch24()); break;
+            case 0x03: write24(fetch24(), registers[fetch8() & 0x07]); break;
+            case 0x04: 
+                int addA = fetch8() & 0x07;
+                registers[addA] = (registers[addA] + registers[fetch8() & 0x07]) & 0xFFFFFF;
+                updateFlags(registers[addA]);
+                break;
+            case 0x05: 
+                pc = fetch24(); 
+                break;
+            case 0x06: 
+                int jzTarget = fetch24();
+                if (zeroFlag) pc = jzTarget;
+                break;
+            case 0x07: push32(registers[fetch8() & 0x07]); break;
+            case 0x08: registers[fetch8() & 0x07] = pop32(); break;
+            case 0x09: // CALL
+                int callTarget = fetch24();
+                push32(pc); 
+                pc = callTarget;
+                break;
+            case 0x0A: pc = pop32(); break;
+            case 0x0B: registers[fetch8() & 0x07] = read8(fetch24()); break;
+            case 0x0C: 
+                int subA = fetch8() & 0x07;
+                registers[subA] = (registers[subA] - registers[fetch8() & 0x07]) & 0xFFFFFF;
+                updateFlags(registers[subA]);
+                break;
+            case 0x0F: 
+                int valA = registers[fetch8() & 0x07];
+                int valB = registers[fetch8() & 0x07];
+                updateFlags(valA - valB);
+                break;
+            case 0x10: 
+                int jneTarget = fetch24();
+                if (!zeroFlag) pc = jneTarget;
+                break;
+            case 0x12: // LOAD8_IND
+                int lIndDest = fetch8() & 0x07;
+                registers[lIndDest] = read8(registers[fetch8() & 0x07] & 0xFFFFF);
+                break;
+            case 0x13: // STORE8_IND
+                int sIndPtr = registers[fetch8() & 0x07] & 0xFFFFF;
+                int sIndVal = registers[fetch8() & 0x07] & 0xFF;
+                write8(sIndPtr, (byte)sIndVal);
+                break;
+            case 0x14: interruptsEnabled = false; break;
+            case 0x15: interruptsEnabled = true; break;
+            case 0x16: // IRET
+                pc = pop32();
+                int packed = pop32();
+                zeroFlag = (packed & 1) != 0;
+                signFlag = (packed & 2) != 0;
+                interruptsEnabled = (packed & 4) != 0; // BUGG-FIX: Återställ tidigare tillstånd istället för att tvinga till TRUE!
+                break;
+            case 0x19: 
+                int mRA = fetch8() & 0x07;
+                registers[mRA] = (registers[mRA] * registers[fetch8() & 0x07]) & 0xFFFFFF;
+                updateFlags(registers[mRA]);
+                break;
+            case 0x1A: 
+                int s8Addr = fetch24();
+                write8(s8Addr, (byte)(registers[fetch8() & 0x07] & 0xFF)); 
+                break;
+            case 0x1B: 
+                int destReg = fetch8() & 0x07;
+                registers[destReg] = registers[fetch8() & 0x07];
+                break;
+            case 0x20: 
+                int incReg = fetch8() & 0x07;
+                registers[incReg] = (registers[incReg] + 1) & 0xFFFFFF;
+                updateFlags(registers[incReg]);
+                break;
+            case 0x21: 
+                int decReg = fetch8() & 0x07;
+                registers[decReg] = (registers[decReg] - 1) & 0xFFFFFF;
+                updateFlags(registers[decReg]);
+                break;
+            case 0x22: 
+                // Mjukvaruavbrott påverkas INTE av interruptsEnabled
+                executeInterrupt(fetch8() & 0xFF); 
+                break;
+            case 0x23: 
+                int divA = fetch8() & 0x07;
+                int divB = registers[fetch8() & 0x07];
+                if (divB == 0) triggerPanic("DIVISION_BY_ZERO");
+                else {
+                    registers[divA] = (registers[divA] / divB) & 0xFFFFFF;
+                    updateFlags(registers[divA]);
+                }
+                break;
+            case 0x24: 
+                int andRegA = fetch8() & 0x07;
+                registers[andRegA] &= registers[fetch8() & 0x07];
+                updateFlags(registers[andRegA]);
+                break;
+            case 0xFF: break;
+            default: triggerPanic("ILLEGAL_INSTRUCTION: 0x" + Integer.toHexString(opcode).toUpperCase()); break;
+        }
+    }
+
+    private String getOpcodeName(int op) {
+        return switch (op) {
+            case 0x00 -> "HALT"; case 0x01 -> "MOV"; case 0x02 -> "LOAD";
+            case 0x03 -> "STORE"; case 0x04 -> "ADD"; case 0x05 -> "JMP";
+            case 0x06 -> "JZ"; case 0x07 -> "PUSH"; case 0x08 -> "POP";
+            case 0x09 -> "CALL"; case 0x0A -> "RET"; case 0x0B -> "LOAD8";
+            case 0x0C -> "SUB"; case 0x0F -> "CMP"; case 0x10 -> "JNE";
+            case 0x12 -> "LOAD8_IND"; case 0x13 -> "STORE8_IND"; case 0x14 -> "CLI";
+            case 0x15 -> "STI"; case 0x16 -> "IRET"; case 0x19 -> "MUL";
+            case 0x1A -> "STORE8"; case 0x1B -> "MOV_REG"; case 0x20 -> "INC";
+            case 0x21 -> "DEC"; case 0x22 -> "INT"; case 0x23 -> "DIV";
+            case 0x24 -> "AND"; case 0xFF -> "NOP";
+            default -> "UNKNOWN";
+        };
+    }
+
+    private void logTrace(String msg) {
+        traceLog.add(msg);
+        if (traceLog.size() > 15) traceLog.poll();
+    }
+
+    public void triggerInterrupt(int irq) { 
+        if (interruptsEnabled) this.pendingInterrupt = irq; 
+    }
+
+    // Garanterad exekvering av avbrottet
+    private void executeInterrupt(int irq) {
+        boolean wasEnabled = interruptsEnabled;
+        interruptsEnabled = false; 
+        
+        // Spara flaggornas tillstånd OCH om interrupts var på/av
+        int packed = (zeroFlag ? 1 : 0) | (signFlag ? 2 : 0) | (wasEnabled ? 4 : 0);
+        push32(packed); 
+        push32(pc);     
+        pc = read24(IVT_START + (irq * 4));
+    }
+
+    public void triggerPanic(String code) { 
+        this.panic = true; 
+        this.panicCode = code; 
+        this.halt = true; 
+        System.err.println("[ CPU CRASH ] PC: 0x" + Integer.toHexString(pc).toUpperCase() + " Code: " + code);
+        dumpState();
+    }
+
+    private void dumpState() {
+        System.out.println("--- CPU POST-MORTEM DUMP ---");
+        for (String log : traceLog) System.out.println("  " + log);
+    }
+    
+    public boolean isPanic() { return panic; }
+    public String getPanicCode() { return panicCode; }
+    public int getPC() { return pc; }
+    
+    private void push32(int val) { sp -= 4; write32(sp, val); }
+    private int pop32() { int val = read32(sp); sp += 4; return val; }
+    private int fetch8() { 
+        if (pc < 0 || pc >= memory.length) { triggerPanic("SEG_FAULT"); return 0; } 
+        return memory[pc++] & 0xFF; 
+    }
+    private int fetch24() { int val = read24(pc); pc += 3; return val; }
+    private int read8(int a) { return (a < 0 || a >= memory.length) ? 0 : memory[a] & 0xFF; }
+    private void write8(int a, byte v) { if (a >= 0 && a < memory.length) memory[a] = v; }
+    private int read24(int a) { return (a < 0 || a >= memory.length - 2) ? 0 : ((memory[a] & 0xFF) << 16) | ((memory[a + 1] & 0xFF) << 8) | (memory[a + 2] & 0xFF); }
+    private void write24(int a, int v) { if (a >= 0 && a < memory.length - 2) { memory[a] = (byte)(v >> 16); memory[a+1] = (byte)(v >> 8); memory[a+2] = (byte)v; } }
+    private int read32(int a) { return (a < 0 || a >= memory.length - 3) ? 0 : ((memory[a] & 0xFF) << 24) | ((memory[a + 1] & 0xFF) << 16) | ((memory[a + 2] & 0xFF) << 8) | (memory[a + 3] & 0xFF); }
+    private void write32(int a, int v) { if (a >= 0 && a < memory.length - 3) { memory[a] = (byte)(v >> 24); memory[a+1] = (byte)(v >> 16); memory[a+2] = (byte)(v >> 8); memory[a+3] = (byte)v; } }
+    private void updateFlags(int r) { zeroFlag = (r == 0); int signed = (r << 8) >> 8; signFlag = (signed < 0); }
+}

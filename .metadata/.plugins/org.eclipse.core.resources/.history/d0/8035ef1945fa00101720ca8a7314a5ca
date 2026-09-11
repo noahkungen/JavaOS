@@ -1,0 +1,49 @@
+package com.javaos;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+/**
+ * The core system singleton. 
+ * Manages the VFS reference and the Virtual Thread Scheduler.
+ */
+public class Kernel {
+    private static Kernel instance;
+    private final VirtualFileSystem vfs;
+    private final ExecutorService processScheduler;
+
+    private Kernel() {
+        // Section 3: Initialize VFS
+        this.vfs = new VirtualFileSystem();
+        
+        // Section 4.2: Project Loom / Virtual Threads
+        // Creates a thread pool where every task gets a new virtual thread.
+        this.processScheduler = Executors.newVirtualThreadPerTaskExecutor();
+    }
+
+    public static synchronized Kernel getInstance() {
+        if (instance == null) {
+            instance = new Kernel();
+        }
+        return instance;
+    }
+
+    public VirtualFileSystem getVfs() {
+        return vfs;
+    }
+
+    /**
+     * Submits a runnable task (a simulated process) to the scheduler.
+     * returns a Future enabling signal handling (like SIGKILL).
+     */
+    public Future<?> submitProcess(Runnable process) {
+        return processScheduler.submit(process);
+    }
+
+    public void shutdown() {
+        processScheduler.shutdownNow();
+        System.out.println("System Halted.");
+        System.exit(0);
+    }
+}

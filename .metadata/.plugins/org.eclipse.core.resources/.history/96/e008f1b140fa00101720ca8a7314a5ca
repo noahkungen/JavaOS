@@ -1,0 +1,82 @@
+package com.javaos;
+
+/**
+ * Entry point. Simulates the BIOS/EFI boot sequence.
+ */
+public class Bootloader {
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println("\033[H\033[2J"); // ANSI Clear Screen
+        System.out.println("JavaOS Boot Manager v1.0");
+        System.out.println("Initializing Virtual Hardware...");
+        
+        // Simulation Delays (Immersiveness)
+        printStatus("CPU", "Detecting Virtual Cores (Project Loom)");
+        Thread.sleep(300);
+        
+        printStatus("RAM", "Allocating Jimfs Heap Memory");
+        Thread.sleep(300);
+        
+        printStatus("VFS", "Mounting Root Filesystem");
+        // Initialize Kernel (which in turn initializes VFS)
+        Kernel.getInstance(); 
+        Thread.sleep(400);
+
+        System.out.println("\nBoot complete. Launching Shell...\n");
+        Thread.sleep(500);
+
+        // Handover to User Space
+        new Shell().start();
+    }
+
+    private static void printStatus(String component, String action) {
+        // Basic ANSI coloring
+        String green = "\u001B[32m";
+        String reset = "\u001B[0m";
+        System.out.printf("[%sOK%s] %s: %s%n", green, reset, component, action);
+    }package com.javaos;
+
+/**
+ * Entry point. Initializes the system kernel and user space.
+ */
+public class Bootloader {
+
+    public static void main(String[] args) {
+        // Real-time boot sequence without artificial delays
+        System.out.println("\033[H\033[2J"); // ANSI Clear Screen
+        System.out.println("JavaOS Kernel v1.0");
+
+        // Real Hardware Detection
+        int cores = Runtime.getRuntime().availableProcessors();
+        long maxMemory = Runtime.getRuntime().maxMemory() / (1024 * 1024);
+        
+        System.out.printf("[ SYSTEM ] CPU Cores Detected: %d%n", cores);
+        System.out.printf("[ SYSTEM ] JVM Heap Available: %d MB%n", maxMemory);
+
+        long start = System.currentTimeMillis();
+        
+        // Actual System Initialization
+        System.out.print("[ KERNEL ] Initializing Subsystems... ");
+        try {
+            Kernel.getInstance(); // This triggers VFS and Scheduler creation
+            long duration = System.currentTimeMillis() - start;
+            System.out.printf("Done (%d ms)%n", duration);
+        } catch (Exception e) {
+            System.err.println("FAILED");
+            e.printStackTrace();
+            System.exit(1);
+        }
+
+        // Mount check (Real check against the VFS)
+        if (Kernel.getInstance().getVfs() != null) {
+             System.out.println("[  VFS   ] Filesystem Mounted: rootfs (Jimfs)");
+        }
+
+        System.out.println("[  INIT  ] Spawning Shell (PID 1)...");
+        System.out.println();
+
+        // Handover to User Space
+        new Shell().start();
+    }
+}
+}

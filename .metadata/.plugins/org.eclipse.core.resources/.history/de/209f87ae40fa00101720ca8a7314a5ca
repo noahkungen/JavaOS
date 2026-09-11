@@ -1,0 +1,45 @@
+package com.javaos;
+
+/**
+ * Entry point. Initializes the system kernel and user space.
+ */
+public class Bootloader {
+
+    public static void main(String[] args) {
+        // Real-time boot sequence without artificial delays
+        System.out.println("\033[H\033[2J"); // ANSI Clear Screen
+        System.out.println("JavaOS Kernel v1.0");
+
+        // Real Hardware Detection
+        int cores = Runtime.getRuntime().availableProcessors();
+        long maxMemory = Runtime.getRuntime().maxMemory() / (1024 * 1024);
+        
+        System.out.printf("[ SYSTEM ] CPU Cores Detected: %d%n", cores);
+        System.out.printf("[ SYSTEM ] JVM Heap Available: %d MB%n", maxMemory);
+
+        long start = System.currentTimeMillis();
+        
+        // Actual System Initialization
+        System.out.print("[ KERNEL ] Initializing Subsystems... ");
+        try {
+            Kernel.getInstance(); // This triggers VFS and Scheduler creation
+            long duration = System.currentTimeMillis() - start;
+            System.out.printf("Done (%d ms)%n", duration);
+        } catch (Exception e) {
+            System.err.println("FAILED");
+            e.printStackTrace();
+            System.exit(1);
+        }
+
+        // Mount check (Real check against the VFS)
+        if (Kernel.getInstance().getVfs() != null) {
+             System.out.println("[  VFS   ] Filesystem Mounted: rootfs (Jimfs)");
+        }
+
+        System.out.println("[  INIT  ] Spawning Shell (PID 1)...");
+        System.out.println();
+
+        // Handover to User Space
+        new Shell().start();
+    }
+}

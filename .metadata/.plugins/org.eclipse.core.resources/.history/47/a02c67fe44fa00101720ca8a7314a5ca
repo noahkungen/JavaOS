@@ -1,0 +1,65 @@
+package com.javaos;
+
+import com.google.common.jimfs.Configuration;
+import com.google.common.jimfs.Jimfs;
+
+import java.io.IOException;
+import java.nio.file.FileSystem;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+/**
+ * Implements Section 3: The Virtual File System (VFS) Layer.
+ * Currently uses Jimfs (Volatile RAM) but is designed to allow mounting
+ * ZipFileSystems (Persistent) in the future.
+ */
+public class VirtualFileSystem {
+
+    private final FileSystem rootFileSystem;
+    private final Path rootPath;
+
+    public VirtualFileSystem() {
+        // Initialize an in-memory file system mimicking a Unix environment
+        this.rootFileSystem = Jimfs.newFileSystem(Configuration.unix());
+        this.rootPath = rootFileSystem.getPath("/");
+        initializeDirectoryStructure();
+    }
+
+    private void initializeDirectoryStructure() {
+        try {
+            // Create standard hierarchy: /, /bin, /home, /etc, /tmp
+            createDir("/bin");
+            createDir("/etc");
+            createDir("/home");
+            createDir("/home/user"); // Default user home
+            createDir("/tmp");
+            createDir("/var");
+            
+            // Create a fake config file to demonstrate file existence
+            Path passwd = resolve("/etc/passwd");
+            Files.writeString(passwd, "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000:user:/home/user:/bin/bash");
+            
+            System.out.println("[ VFS ] File system mounted at RAM root.");
+        } catch (IOException e) {
+            System.err.println("[ VFS ] Critical Error initializing VFS: " + e.getMessage());
+        }
+    }
+
+    private void createDir(String path) throws IOException {
+        Path p = rootFileSystem.getPath(path);
+        if (!Files.exists(p)) {
+            Files.createDirectories(p);
+        }
+    }
+
+    /**
+     * Resolves a string path to a real NIO Path object within the simulation.
+     */
+    public Path resolve(String path) {
+        return rootFileSystem.getPath(path);
+    }
+
+    public Path getRoot() {
+        return rootPath;
+    }
+}

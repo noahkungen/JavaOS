@@ -1,0 +1,169 @@
+package com.javaos.hardware;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferByte;
+import java.awt.image.IndexColorModel;
+
+/**
+ * vVGA Adapter v4.76 [Diagnostic Suite].
+ * Features:
+ * - Master DEBUG toggle for persistent hardware telemetry.
+ * - Hybrid Layering: VRAM (Pixels) + Text Buffer (ASCII) + Cursor.
+ * - Memory Peek: Monitor's CPU writes to the Text Buffer in real-time.
+ */
+public class GPU extends JPanel {
+    private static final long serialVersionUID = 1L;
+    
+    // --- MASTER DEBUG TOGGLE ---
+    // Set to 'true' to enable persistent console logging of hardware states.
+    private static final boolean DEBUG = true;
+    
+    private int debugFrameCounter = 0;
+
+    private static final int WIDTH = 320, HEIGHT = 200;
+    private static final int VRAM_START = 0x80000;
+    private static final int TEXT_START = 0xB8000; 
+    private static final int FONT_START = 0xE0000;
+    
+    private static final int CURSOR_X_ADDR = 0xA0010;
+    private static final int CURSOR_Y_ADDR = 0xA0011;
+    
+    private final byte[] memory;
+    private final BufferedImage screen;
+    private final byte[] pixelData;
+    private long lastCursorToggle = 0;
+    private boolean cursorVisible = true;
+
+    public GPU(byte[] memory) {
+        this.memory = memory;
+        byte[] r = new byte[256], g = new byte[256], b = new byte[256];
+        setupPalette(r, g, b);
+        IndexColorModel icm = new IndexColorModel(8, 256, r, g, b);
+        this.screen = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_BYTE_INDEXED, icm);
+        this.pixelData = ((DataBufferByte) screen.getRaster().getDataBuffer()).getData();
+        setPreferredSize(new Dimension(WIDTH * 2, HEIGHT * 2));
+        
+        if (DEBUG) {
+            System.out.println("[ GPU ] vVGA v4.76 Diagnostic Engine Online.");
+            System.out.println("[ GPU ] Region Mapping:");
+            System.out.println("        > Text Buffer: 0x" + Integer.toHexString(TEXT_START).toUpperCase());
+            System.out.println("        > VRAM Buffer: 0x" + Integer.toHexString(VRAM_START).toUpperCase());
+            System.out.println("        > Hardware Font: 0x" + Integer.toHexString(FONT_START).toUpperCase());
+            
+            // Font Integrity Check
+            StringBuilder fontPeek = new StringBuilder();
+            for(int i=0; i<8; i++) fontPeek.append(String.format("%02X ", memory[FONT_START + i]));
+            System.out.println("[ GPU ] Font Integrity Check (Char 0): " + fontPeek.toString());
+        }
+    }
+
+    private void setupPalette(byte[] r, byte[] g, byte[] b) {
+        // Standard CGA 16-color palette
+        int[] palette = {
+            0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+            0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+        };
+        for (int i = 0; i < 16; i++) { 
+            r[i] = (byte)(palette[i] >> 16); 
+            g[i] = (byte)(palette[i] >> 8); 
+            b[i] = (byte)palette[i]; 
+        }
+    }
+
+    public void refreshLoop() {
+        if (DEBUG) System.out.println("[ GPU ] Refresh thread started.");
+        
+        while (true) {
+            // Layer 1: VRAM Background (Raw pixels)
+            for (int i = 0; i < WIDTH * HEIGHT; i++) {
+                pixelData[i] = memory[VRAM_START + i];
+            }
+
+            int charCount = 0;
+            // Layer 2: Text Mode Rendering
+            for (int row = 0; row < 25; row++) {
+                for (int col = 0; col < 40; col++) {
+                    int addr = TEXT_START + (row * 40) + col;
+                    int ascii = memory[addr] & 0xFF;
+                    
+                    // Filter printable ASCII range
+                    if (ascii >= 32 && ascii <= 126) {
+                        charCount++;
+                        renderChar(col * 8, row * 8, ascii);
+                    }
+                }
+            }
+
+            // Layer 3: Blinking Hardware Cursor
+            handleCursorBlink();
+
+            // --- TELEMETRY ---
+            if (DEBUG && debugFrameCounter % 180 == 0) {
+                if (charCount > 0) {
+                    System.out.println("[ GPU ] ACTIVE: Found " + charCount + " printable characters.");
+                } else {
+                    // Peek 16 bytes of the buffer to catch non-printable writes or logic errors
+                    StringBuilder peek = new StringBuilder();
+                    for(int i=0; i<16; i++) peek.append(String.format("%02X ", memory[TEXT_START + i]));
+                    System.out.println("[ GPU ] IDLE: Buffer is empty (0xFF). Peek @ 0xB8000: " + peek.toString());
+                }
+            }
+            debugFrameCounter++;
+            
+            repaint();
+            try { Thread.sleep(16); } catch (InterruptedException e) { break; }
+        }
+    }
+
+    private void handleCursorBlink() {
+        if (System.currentTimeMillis() - lastCursorToggle > 500) {
+            cursorVisible = !cursorVisible;
+            lastCursorToggle = System.currentTimeMillis();
+        }
+
+        if (cursorVisible) {
+            int cx = memory[CURSOR_X_ADDR] & 0xFF;
+            int cy = memory[CURSOR_Y_ADDR] & 0xFF;
+            // Clamp to ensure visibility
+            cx = Math.max(0, Math.min(39, cx));
+            cy = Math.max(0, Math.min(24, cy));
+            renderCursor(cx * 8, cy * 8);
+        }
+    }
+
+    private void renderChar(int x, int y, int index) {
+        // Clear background for the character cell (Index 1 = Blue)
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                int px = x + c, py = y + r;
+                if (px < WIDTH && py < HEIGHT) pixelData[py * WIDTH + px] = 1; 
+            }
+        }
+        // Draw character glyph (Index 15 = White)
+        for (int row = 0; row < 8; row++) {
+            byte bits = memory[FONT_START + (index * 8) + row];
+            for (int col = 0; col < 8; col++) {
+                if (((bits >> (7 - col)) & 1) == 1) {
+                    int px = x + col, py = y + row;
+                    if (px < WIDTH && py < HEIGHT) pixelData[py * WIDTH + px] = 15;
+                }
+            }
+        }
+    }
+
+    private void renderCursor(int x, int y) {
+        // Simple underline cursor
+        for (int col = 0; col < 8; col++) {
+            int px = x + col, py = y + 7;
+            if (px < WIDTH && py < HEIGHT) pixelData[py * WIDTH + px] = 15;
+        }
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) { 
+        // Render the indexed BufferedImage to the panel with 2x scaling
+        g.drawImage(screen, 0, 0, getWidth(), getHeight(), null); 
+    }
+}

@@ -1,0 +1,191 @@
+:shell_prompt
+MOV R4, prompt_p1
+MOV R0, 1
+INT 0x21
+LOAD8 R0, 0xA002C
+MOV R7, 1
+CMP R0, R7
+JZ prm_d
+MOV R0, 67
+JMP prm_end
+:prm_d
+MOV R0, 68
+:prm_end
+CALL put_char
+MOV R4, prompt_p2
+MOV R0, 1
+INT 0x21
+
+MOV R4, 0x11000
+CALL read_line
+MOV R5, R4
+CALL dispatch_cmd
+JMP shell_prompt
+
+:read_line
+LOAD8 R1, 0xA0010
+STORE8 0x12000, R1
+LOAD8 R2, 0xA0011
+STORE8 0x12001, R2
+MOV R5, 0
+MOV R6, 0
+MOV R7, 0
+STORE8_IND R4, R7
+:rl_loop
+CALL rl_redraw
+:rl_wait
+CALL check_char
+MOV R7, 0
+CMP R0, R7
+JZ rl_wait
+MOV R1, 10
+CMP R0, R1
+JZ rl_done
+MOV R1, 63
+CMP R0, R1
+JZ rl_question
+MOV R1, 128
+CMP R0, R1
+JZ rl_left
+MOV R1, 129
+CMP R0, R1
+JZ rl_right
+MOV R1, 8
+CMP R0, R1
+JZ rl_bs
+MOV R1, 133
+CMP R0, R1
+JZ rl_wait
+MOV R1, 132
+CMP R0, R1
+JZ rl_wait
+MOV R7, 255
+CMP R6, R7
+JZ rl_loop
+MOV R1, R4
+ADD R1, R5
+MOV R2, R1
+INC R2
+MOV R3, R6
+SUB R3, R5
+PUSH R0
+CALL rl_mmr
+POP R0
+MOV R1, R4
+ADD R1, R5
+STORE8_IND R1, R0
+INC R5
+INC R6
+JMP rl_loop
+
+:rl_left
+MOV R7, 0
+CMP R5, R7
+JZ rl_wait
+DEC R5
+CALL rl_calc_cursor
+JMP rl_wait
+:rl_right
+CMP R5, R6
+JZ rl_wait
+INC R5
+CALL rl_calc_cursor
+JMP rl_wait
+
+:rl_bs
+MOV R7, 0
+CMP R5, R7
+JZ rl_loop
+DEC R5
+DEC R6
+MOV R1, R4
+ADD R1, R5
+MOV R2, R1
+INC R2
+MOV R3, R6
+SUB R3, R5
+CALL rl_mml
+JMP rl_loop
+
+:rl_question
+MOV R1, R4
+ADD R1, R5
+STORE8_IND R1, R0
+INC R5
+INC R6
+:rl_done
+MOV R1, R4
+ADD R1, R6
+MOV R7, 0
+STORE8_IND R1, R7
+MOV R0, 10
+CALL put_char
+RET
+
+:rl_redraw
+LOAD8 R1, 0x12000
+STORE8 0xA0010, R1
+LOAD8 R2, 0x12001
+STORE8 0xA0011, R2
+PUSH R4
+CALL print_str
+POP R4
+MOV R0, 32
+CALL put_char
+CALL put_char
+:rl_calc_cursor
+LOAD8 R1, 0x12000
+ADD R1, R5
+LOAD8 R2, 0x12001
+MOV R7, 40
+MOV R3, R1
+DIV R3, R7
+ADD R2, R3
+MUL R3, R7
+SUB R1, R3
+STORE8 0xA0010, R1
+STORE8 0xA0011, R2
+RET
+
+:rl_mml
+MOV R7, 0
+CMP R3, R7
+JZ rl_mml_d
+LOAD8_IND R0, R2
+STORE8_IND R1, R0
+INC R1
+INC R2
+DEC R3
+JMP rl_mml
+:rl_mml_d
+MOV R1, R4
+ADD R1, R6
+MOV R7, 0
+STORE8_IND R1, R7
+RET
+
+:rl_mmr
+MOV R7, 0
+CMP R3, R7
+JZ rl_mmr_d
+ADD R1, R3
+DEC R1
+ADD R2, R3
+DEC R2
+:rl_mmr_l
+LOAD8_IND R0, R1
+STORE8_IND R2, R0
+MOV R7, 0
+DEC R3
+CMP R3, R7
+JZ rl_mmr_d
+DEC R1
+DEC R2
+JMP rl_mmr_l
+:rl_mmr_d
+MOV R1, R4
+ADD R1, R6
+INC R1
+MOV R7, 0
+STORE8_IND R1, R7
+RET

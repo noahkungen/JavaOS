@@ -1,0 +1,101 @@
+package com.javaos;
+
+import com.google.common.jimfs.Configuration;
+import com.google.common.jimfs.Jimfs;
+
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Implements Section 3: The Virtual File System (VFS) Layer.
+ * Updated to use Persistent Storage (ZipFileSystem).
+ */
+public class VirtualFileSystem {
+
+    private FileSystem rootFileSystem;
+    private final Path rootPath;
+
+    public VirtualFileSystem() {
+        // We will store the entire OS state in a zip file named 'disk.img'
+        String diskFileName = "disk.img";
+        Path localDiskPath = Path.of(diskFileName);
+        
+        try {
+            // Setup the URI scheme for a jar/zip file system
+            URI uri = URI.create("jar:" + localDiskPath.toUri());
+            
+            // Environment properties: create the file if it doesn't exist
+            Map<String, String> env = new HashMap<>();
+            env.put("create", "true");
+
+            System.out.println("[ VFS ] Mounting persistent storage: " + localDiskPath.toAbsolutePath());
+            
+            // Initialize the persistent file system
+            this.rootFileSystem = FileSystems.newFileSystem(uri, env);
+            this.rootPath = rootFileSystem.getPath("/");
+            
+            initializeDirectoryStructure();
+            
+        } catch (IOException e) {
+            System.err.println("[ VFS ] Critical Error mounting disk image. Falling back to RAM.");
+            e.printStackTrace();
+            // Fallback to Jimfs if disk fails
+            this.rootFileSystem = Jimfs.newFileSystem(Configuration.unix());
+            this.rootPath = rootFileSystem.getPath("/");
+        }
+    }
+
+    private void initializeDirectoryStructure() {
+        try {
+            // Only create these if they don't exist (persistence check)
+            if (!Files.exists(resolve("/bin"))) {
+                System.out.println("[ VFS ] Formatting new disk image...");
+                createDir("/bin");
+                createDir("/etc");
+                createDir("/home");
+                createDir("/home/user");
+                createDir("/tmp");
+                createDir("/var");
+
+                // Create default config file
+                Path passwd = resolve("/etc/passwd");
+                Files.writeString(passwd, "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000:user:/home/user:/bin/bash");
+            }
+        } catch (IOException e) {
+            System.err.println("[ VFS ] Error checking directory structure: " + e.getMessage());
+        }
+    }
+
+    private void createDir(String path) throws IOException {
+        Path p = rootFileSystem.getPath(path);
+        if (!Files.exists(p)) {
+            Files.createDirectories(p);
+        }
+    }
+
+    public Path resolve(String path) {
+        return rootFileSystem.getPath(path);
+    }
+
+    public Path getRoot() {
+        return rootPath;
+    }
+    
+    // Essential for saving data to the zip file on shutdown
+    public void close() {
+        try {
+            if (rootFileSystem != null && rootFileSystem.isOpen()) {
+                rootFileSystem.close();
+                System.out.println("[ VFS ] Filesystem synced to disk.");
+            }
+        } catch (IOException e) {
+            System.err.println("[ VFS ] Failed to close filesystem: " + e.getMessage());
+        }
+    }
+}
